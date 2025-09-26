@@ -127,7 +127,7 @@ class TritonPythonModel:
         """
         llm_request = pb_utils.InferenceRequest(
             model_name="tensorrt_llm",
-            requested_output_names=["output_ids", "sequence_length"],
+            requested_output_names=["output_ids", "sequence_length", "cum_log_probs", "output_log_probs"],
             inputs=llm_request_inputs,
         )
         responses = llm_request.exec(decoupled=self.decoupled)
@@ -141,10 +141,19 @@ class TritonPythonModel:
 
             output_text = self.tokenizer.decode(output_ids).strip()
             output_text = re.sub(r'<\|.*?\|>', '', output_text)
-            response = pb_utils.InferenceResponse(output_tensors=[
+            output_tensors=[
                 pb_utils.Tensor("TRANSCRIPTS",
                                 np.array([output_text], np.object_)),
-            ])
+            ]
+            cum_log_probs = pb_utils.get_output_tensor_by_name(llm_response, "cum_log_probs")  
+            if cum_log_probs is not None:  
+                output_tensors.append(pb_utils.Tensor("cum_log_probs", cum_log_probs.as_numpy()))  
+            
+            output_log_probs = pb_utils.get_output_tensor_by_name(llm_response, "output_log_probs")  
+            if output_log_probs is not None:  
+                output_tensors.append(pb_utils.Tensor("output_log_probs", output_log_probs.as_numpy()))  
+            
+            response = pb_utils.InferenceResponse(output_tensors=output_tensors)
             yield response
         else:
             output_ids = []
