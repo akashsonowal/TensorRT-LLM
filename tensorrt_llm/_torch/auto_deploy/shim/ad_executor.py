@@ -158,7 +158,7 @@ class ADEngine(ModelEngine):
         self.model = get_inference_model(self.cache_seq_interface)
 
         # start fresh with fixed seed
-        torch.manual_seed(1234)
+        torch.manual_seed(42)
 
     @nvtx_range("ad_prepare_inputs")
     def _prepare_inputs(
@@ -182,6 +182,7 @@ class ADEngine(ModelEngine):
         input_pos: List[int] = []
         last_logit_only: List[bool] = []
         page_assignments: List[List[int]] = []
+        slot_idx: List[int] = []
         flat_gather_idx: List[int] = []
         extra_args: Dict[str, List[torch.Tensor]] = defaultdict(list)
 
@@ -199,6 +200,9 @@ class ADEngine(ModelEngine):
             # get cache indices
             cache_indices = kv_cache_manager.get_cache_indices(request)
             page_assignments.append(cache_indices)
+
+            # store seq slot idx
+            slot_idx.append(request.seq_slot)
 
             # store extra arguments
             if request.py_multimodal_data is not None:
@@ -219,6 +223,10 @@ class ADEngine(ModelEngine):
 
             request.py_batch_idx = request.seq_slot
 
+            # store seq slot idx
+            # TODO: double-check if this is correct for the overlap scheduler
+            slot_idx.append(request.seq_slot)
+
             # return all logits
             last_logit_only.append(False)
 
@@ -231,6 +239,7 @@ class ADEngine(ModelEngine):
             input_ids,
             input_pos=input_pos,
             page_assignments=page_assignments,
+            slot_idx=slot_idx,
             **extra_args,
         )
         # scatter the new tokens into the input_ids tensor if provided
@@ -306,6 +315,13 @@ def create_autodeploy_executor(ad_config: LlmArgs):
     max_draft_len = (
         0 if ad_config.speculative_config is None else ad_config.speculative_config.max_draft_len
     )
+    max_total_draft_tokens = 0
+    if ad_config.speculative_config is None:
+        max_total_draft_tokens = 0
+    elif hasattr(ad_config.speculative_config, "max_total_draft_tokens"):
+        max_total_draft_tokens = ad_config.speculative_config.max_total_draft_tokens
+    else:
+        max_total_draft_tokens = max_draft_len
 
     # initialize model engine
     engine = ADEngine.build_from_config(ad_config=ad_config)
@@ -340,6 +356,7 @@ def create_autodeploy_executor(ad_config: LlmArgs):
     sampler_args = TorchSampler.Args(
         max_seq_len=ad_config.max_seq_len,
         max_draft_len=max_draft_len,
+        max_total_draft_tokens=max_total_draft_tokens,
         max_num_sequences=max_num_sequences,
         max_beam_width=ad_config.max_beam_width,
     )
